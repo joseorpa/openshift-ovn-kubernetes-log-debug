@@ -1,0 +1,171 @@
+import os
+import yaml
+from jinja2 import Environment
+from kubernetes import client, config
+
+def get_all_node_names(api_instance):
+    """Fetches a list of all node names from the cluster."""
+    print("Fetching all node names from the cluster...")
+    try:
+        node_list = api_instance.list_node()
+        node_names = [item.metadata.name for item in node_list.items]
+        if not node_names:
+            print("Warning: No nodes found in the cluster.")
+        else:
+            print(f"Found {len(node_names)} total nodes.")
+        return node_names
+    except client.ApiException as e:
+        print(f"Error fetching nodes from Kubernetes API: {e}")
+        print("Please ensure your kube-config is correct and you have permissions to list nodes.")
+        return []
+
+def get_nodes_by_pod_filter(api_instance, pod_name_pattern):
+    """
+    Fetches a list of unique node names that are running pods whose names contain the provided pattern.
+    """
+    print(f"Fetching nodes running pods with names containing '{pod_name_pattern}'...")
+
+    try:
+        pod_list = api_instance.list_pod_for_all_namespaces(watch=False)
+        # Use a set to store unique node names
+        nodes_with_pods = set()
+        for item in pod_list.items:
+            # Ensure the pod is scheduled to a node and its name matches the pattern
+            if item.spec.node_name and pod_name_pattern in item.metadata.name:
+                nodes_with_pods.add(item.spec.node_name)
+
+        if not nodes_with_pods:
+            print(f"Warning: No pods found with names matching the pattern '{pod_name_pattern}'.")
+        else:
+            print(f"Found {len(nodes_with_pods)} nodes running matching pods.")
+        return list(nodes_with_pods)
+    except client.ApiException as e:
+        print(f"Error fetching pods from Kubernetes API: {e}")
+        print("Please ensure your kube-config is correct and you have permissions to list pods.")
+        return []
+
+def render_configmap_template(nodes):
+    """Renders the ConfigMap YAML using a Jinja2 template."""
+    # This uses an inline string as the template.
+    template_str = """
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: env-overrides
+  namespace: openshift-ovn-kubernetes
+data:
+{% for node in nodes %}
+  {{ node }}: |
+    # This sets the log level for the ovn-kubernetes node process:
+    OVN_KUBE_LOG_LEVEL=5
+    # You might also/instead want to enable debug logging for ovn-controller:
+    OVN_LOG_LEVEL=dbg
+{% endfor %}
+  _master: |
+    # This sets the log level for the ovn-kubernetes master process as well as the ovn-dbchecker:
+    OVN_KUBE_LOG_LEVEL=5
+    # You might also/instead want to enable debug logging for northd, nbdb and sbdb on all masters:
+    OVN_LOG_LEVEL=dbg
+"""
+    # Render the template with the list of nodes
+    return Environment().from_string(template_str).render(nodes=nodes)
+
+def apply_configmap(api_instance, namespace, configmap_body):
+    """Creates or updates the ConfigMap in the specified namespace."""
+    try:
+        # Check if the namespace exists
+        api_instance.read_namespace(name=namespace)
+    except client.ApiException as e:
+        if e.status == 404:
+            print(f"Namespace '{namespace}' does not exist. Creating it...")
+            namespace_body = client.V1Namespace(metadata=client.V1ObjectMeta(name=namespace))
+            api_instance.create_namespace(body=namespace_body)
+            print(f"Namespace '{namespace}' created.")
+        else:
+            raise
+
+    try:
+        # Check if the ConfigMap already exists
+        api_instance.read_namespaced_config_map(name=configmap_body['metadata']['name'], namespace=namespace)
+        print("ConfigMap 'env-overrides' already exists. Replacing it...")
+        api_instance.replace_namespaced_config_map(
+            name=configmap_body['metadata']['name'],
+            namespace=namespace,
+            body=configmap_body
+        )
+        print("ConfigMap 'env-overrides' replaced.")
+    except client.ApiException as e:
+        if e.status == 404:
+            print("ConfigMap 'env-overrides' does not exist. Creating it...")
+            api_instance.create_namespaced_config_map(
+                namespace=namespace,
+                body=configmap_body
+            )
+            print("ConfigMap 'env-overrides' created.")
+        else:
+            print(f"Error checking/creating ConfigMap: {e}")
+            raise
+
+def main():
+    """Main function to generate and apply the ConfigMap."""
+    # --- Configuration ---
+    NAMESPACE = "openshift-ovn-kubernetes"
+    
+    # Set to True to filter nodes based on pods running on them.
+    # Set to False to include all nodes in the cluster.
+    FILTER_NODES_BY_PODS = True
+
+    # If FILTER_NODES_BY_PODS is True, this pattern MUST be specified.
+    # Only nodes running pods whose names contain this string will be included.
+    # Example: "ovn-kubernetes-node", "my-app", etc.
+    POD_NAME_PATTERN = "ovn-kubernetes-node"
+
+    # --- Load Kubernetes Configuration ---
+    try:
+        # Try to load in-cluster config first
+        config.load_incluster_config()
+        print("Loaded in-cluster Kubernetes configuration.")
+    except config.ConfigException:
+        try:
+            # Fallback to kube-config file for local development
+            config.load_kube_config()
+            print("Loaded local kube-config.")
+        except config.ConfigException:
+            print("Could not locate a kube-config file or in-cluster config. A valid Kubernetes configuration is required to fetch node names.")
+            return
+
+    # --- Create Kubernetes API client ---
+    core_v1 = client.CoreV1Api()
+
+    # --- Get Node Names ---
+    nodes = []
+    if FILTER_NODES_BY_PODS:
+        if not POD_NAME_PATTERN:
+            print("Error: Filtering by pods is enabled, but POD_NAME_PATTERN is empty.")
+            print("Please specify a pattern to continue.")
+            return
+        nodes = get_nodes_by_pod_filter(core_v1, POD_NAME_PATTERN)
+    else:
+        nodes = get_all_node_names(core_v1)
+
+    if not nodes:
+        print("No node names were found based on the filter criteria. Cannot create ConfigMap. Exiting.")
+        return
+
+    # --- Render ConfigMap YAML ---
+    print("Rendering ConfigMap template...")
+    configmap_yaml = render_configmap_template(nodes)
+    print("Template rendered.")
+
+    # --- Parse YAML to Python Dictionary ---
+    configmap_body = yaml.safe_load(configmap_yaml)
+
+    # --- Apply the ConfigMap ---
+    print(f"Applying ConfigMap to namespace '{NAMESPACE}'...")
+    apply_configmap(core_v1, NAMESPACE, configmap_body)
+    print("Script finished successfully.")
+
+if __name__ == "__main__":
+    # Before running, ensure you have the required libraries installed:
+    # pip install kubernetes jinja2 pyyaml
+    main()
