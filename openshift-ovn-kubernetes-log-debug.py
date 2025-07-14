@@ -46,7 +46,7 @@ def get_nodes_by_pod_filter(api_instance, pod_name_pattern):
         print("Please ensure your kube-config is correct and you have permissions to list pods.")
         return []
 
-def render_configmap_template(nodes):
+def render_configmap_template(nodes, ovn_kube_log_level=5, ovn_log_level='dbg'):
     """Renders the ConfigMap YAML using a Jinja2 template."""
     # This uses an inline string as the template.
     template_str = """
@@ -60,22 +60,30 @@ data:
 {%- if 'master' not in node.lower() %}
   {{ node }}: |
     # This sets the log level for the ovn-kubernetes node process:
-    OVN_KUBE_LOG_LEVEL=5
+    OVN_KUBE_LOG_LEVEL={{ ovn_kube_log_level }}
     # You might also/instead want to enable debug logging for ovn-controller:
-    OVN_LOG_LEVEL=dbg
+    OVN_LOG_LEVEL={{ ovn_log_level }}
 {%- endif %}
 {% endfor %}
   _master: |
     # This sets the log level for the ovn-kubernetes master process as well as the ovn-dbchecker:
-    OVN_KUBE_LOG_LEVEL=5
+    OVN_KUBE_LOG_LEVEL={{ ovn_kube_log_level }}
     # You might also/instead want to enable debug logging for northd, nbdb and sbdb on all masters:
-    OVN_LOG_LEVEL=dbg
+    OVN_LOG_LEVEL={{ ovn_log_level }}
 """
-    # Render the template with the list of nodes
-    return Environment().from_string(template_str).render(nodes=nodes)
+    # Render the template with the list of nodes and log levels
+    return Environment().from_string(template_str).render(
+        nodes=nodes, 
+        ovn_kube_log_level=ovn_kube_log_level, 
+        ovn_log_level=ovn_log_level
+    )
 
-def apply_configmap(api_instance, namespace, configmap_body):
+def apply_configmap(api_instance, namespace, configmap_body, dry_run=False):
     """Creates or updates the ConfigMap in the specified namespace."""
+    if dry_run:
+        print(f"[DRY RUN] Would apply ConfigMap 'env-overrides' to namespace '{namespace}'")
+        return
+    
     try:
         # Check if the namespace exists
         api_instance.read_namespace(name=namespace)
@@ -110,6 +118,121 @@ def apply_configmap(api_instance, namespace, configmap_body):
             print(f"Error checking/creating ConfigMap: {e}")
             raise
 
+def restart_ovnkube_pods(api_instance, namespace, pod_pattern, nodes, dry_run=False):
+    """Restart ovnkube-node pods on the specified nodes by deleting them."""
+    print(f"\nRestarting {pod_pattern} pods on {len(nodes)} nodes...")
+    
+    try:
+        # Get all pods in the namespace
+        pod_list = api_instance.list_namespaced_pod(namespace=namespace)
+        
+        pods_to_restart = []
+        for pod in pod_list.items:
+            # Check if pod matches the pattern and is on one of our nodes
+            if (pod_pattern in pod.metadata.name and 
+                pod.spec.node_name in nodes):
+                pods_to_restart.append(pod)
+        
+        if not pods_to_restart:
+            print(f"No {pod_pattern} pods found on the specified nodes.")
+            return
+        
+        print(f"Found {len(pods_to_restart)} pods to restart:")
+        for pod in pods_to_restart:
+            print(f"  - {pod.metadata.name} (on {pod.spec.node_name})")
+        
+        if dry_run:
+            print(f"\n[DRY RUN] Would delete {len(pods_to_restart)} pods (DaemonSet will recreate them)")
+            return
+        
+        # Delete the pods
+        print("\nDeleting pods (DaemonSet will recreate them)...")
+        for pod in pods_to_restart:
+            try:
+                api_instance.delete_namespaced_pod(
+                    name=pod.metadata.name,
+                    namespace=namespace,
+                    body=client.V1DeleteOptions()
+                )
+                print(f"✓ Deleted {pod.metadata.name}")
+            except client.ApiException as e:
+                print(f"✗ Failed to delete {pod.metadata.name}: {e}")
+        
+        print(f"\nPod restart initiated. The DaemonSet will recreate the pods automatically.")
+        print("Note: It may take a few moments for the pods to fully restart and become ready.")
+        
+    except client.ApiException as e:
+        print(f"Error restarting pods: {e}")
+        raise
+
+def revert_debug_logging(api_instance, namespace, pod_pattern, restart_pods=False, dry_run=False):
+    """Revert debug logging by removing the ConfigMap and optionally restarting pods."""
+    print(f"Reverting debug logging configuration...")
+    
+    try:
+        # Try to read the existing ConfigMap
+        print(f"Reading existing ConfigMap 'env-overrides' from namespace '{namespace}'...")
+        try:
+            configmap = api_instance.read_namespaced_config_map(
+                name='env-overrides',
+                namespace=namespace
+            )
+            print("✓ Found existing ConfigMap")
+        except client.ApiException as e:
+            if e.status == 404:
+                print("✓ No ConfigMap found to revert. Debug logging is already disabled.")
+                return
+            else:
+                print(f"Error reading ConfigMap: {e}")
+                raise
+        
+        # Extract node names from ConfigMap data (excluding _master)
+        affected_nodes = []
+        if configmap.data:
+            for key in configmap.data.keys():
+                if key != '_master':
+                    affected_nodes.append(key)
+        
+        if not affected_nodes:
+            print("✓ No nodes found in ConfigMap data")
+        else:
+            print(f"✓ Found {len(affected_nodes)} nodes in ConfigMap:")
+            for node in affected_nodes:
+                print(f"  - {node}")
+        
+        # Delete the ConfigMap
+        if dry_run:
+            print(f"\n[DRY RUN] Would delete ConfigMap 'env-overrides'")
+        else:
+            print(f"\nDeleting ConfigMap 'env-overrides'...")
+            try:
+                api_instance.delete_namespaced_config_map(
+                    name='env-overrides',
+                    namespace=namespace,
+                    body=client.V1DeleteOptions()
+                )
+                print("✓ ConfigMap deleted successfully")
+            except client.ApiException as e:
+                print(f"Error deleting ConfigMap: {e}")
+                raise
+        
+        # Restart pods if requested and we have nodes
+        if restart_pods and affected_nodes:
+            restart_ovnkube_pods(api_instance, namespace, pod_pattern, affected_nodes, dry_run)
+        elif restart_pods:
+            print("No nodes to restart pods on.")
+        
+        if dry_run:
+            print("\n[DRY RUN] Debug logging configuration would be reverted successfully!")
+        else:
+            print("\nDebug logging configuration reverted successfully!")
+        if not restart_pods:
+            print("Note: You may want to restart ovnkube-node pods manually for changes to take effect immediately.")
+        
+    except Exception as e:
+        print(f"Error during revert process: {e}")
+        raise
+
 def get_kubeconfig_path(args):
     """Get the kubeconfig path from arguments or user input."""
     if args.kubeconfig:
@@ -143,6 +266,12 @@ def main():
 Examples:
   python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig
   python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig ~/.kube/config
+  python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig --restart-pods
+  python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig --dry-run
+  python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig --ovn-kube-log-level 3 --ovn-log-level warn
+  python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig --revert
+  python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig --revert --restart-pods
+  python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig --revert --dry-run
   python3 openshift-ovn-kubernetes-log-debug.py  # Will prompt for kubeconfig path
         """
     )
@@ -173,8 +302,48 @@ Examples:
         help='Show debug output including generated YAML',
         action='store_true'
     )
+    parser.add_argument(
+        '--restart-pods',
+        help='Restart ovnkube-node pods after applying ConfigMap',
+        action='store_true'
+    )
+    parser.add_argument(
+        '--revert',
+        help='Revert debug logging by removing ConfigMap and restarting affected pods',
+        action='store_true'
+    )
+    parser.add_argument(
+        '--dry-run',
+        help='Show what would be done without making any changes',
+        action='store_true'
+    )
+    parser.add_argument(
+        '--ovn-kube-log-level',
+        help='OVN Kubernetes log level (1-10, default: 5)',
+        type=int,
+        choices=range(1, 11),
+        default=5,
+        metavar='LEVEL'
+    )
+    parser.add_argument(
+        '--ovn-log-level',
+        help='OVN log level (off, emer, err, warn, info, dbg, default: dbg)',
+        choices=['off', 'emer', 'err', 'warn', 'info', 'dbg'],
+        default='dbg',
+        metavar='LEVEL'
+    )
     
     args = parser.parse_args()
+    
+    # Validate arguments
+    if args.revert:
+        if args.all_nodes:
+            print("Error: --revert cannot be used with --all-nodes")
+            sys.exit(1)
+        if args.pod_pattern != 'ovnkube-node':
+            print("Warning: --pod-pattern is ignored when using --revert (pattern will be read from ConfigMap)")
+        if args.ovn_kube_log_level != 5 or args.ovn_log_level != 'dbg':
+            print("Warning: --ovn-kube-log-level and --ovn-log-level are ignored when using --revert")
     
     # --- Configuration ---
     NAMESPACE = args.namespace
@@ -223,6 +392,12 @@ Examples:
         print("Please verify your kubeconfig is valid and the cluster is accessible.")
         return
 
+    # --- Handle revert operation ---
+    if args.revert:
+        revert_debug_logging(core_v1, NAMESPACE, POD_NAME_PATTERN, args.restart_pods, args.dry_run)
+        print("Script finished successfully.")
+        return
+
     # --- Get Node Names ---
     nodes = []
     if FILTER_NODES_BY_PODS:
@@ -240,11 +415,12 @@ Examples:
 
     # --- Render ConfigMap YAML ---
     print("Rendering ConfigMap template...")
-    configmap_yaml = render_configmap_template(nodes)
+    print(f"Using log levels: OVN_KUBE_LOG_LEVEL={args.ovn_kube_log_level}, OVN_LOG_LEVEL={args.ovn_log_level}")
+    configmap_yaml = render_configmap_template(nodes, args.ovn_kube_log_level, args.ovn_log_level)
     print("Template rendered.")
-    
-    if args.debug:
-        # Debug: Show the generated YAML structure
+
+    if args.debug or args.dry_run:
+        # Show the generated YAML structure for debug mode or dry-run
         print("\nGenerated ConfigMap YAML:")
         print("=" * 50)
         print(configmap_yaml)
@@ -253,10 +429,24 @@ Examples:
     # --- Parse YAML to Python Dictionary ---
     configmap_body = yaml.safe_load(configmap_yaml)
     
+    if args.dry_run:
+        print(f"\n[DRY RUN] ConfigMap 'env-overrides' would be created/updated in namespace '{NAMESPACE}'")
+        print(f"[DRY RUN] This would affect {len(nodes)} nodes:")
+        for node in nodes:
+            print(f"  - {node}")
+    
     # --- Apply the ConfigMap ---
-    print(f"Applying ConfigMap to namespace '{NAMESPACE}'...")
-    apply_configmap(core_v1, NAMESPACE, configmap_body)
-    print("Script finished successfully.")
+    print(f"\nApplying ConfigMap to namespace '{NAMESPACE}'...")
+    apply_configmap(core_v1, NAMESPACE, configmap_body, args.dry_run)
+    
+    # --- Restart pods if requested ---
+    if args.restart_pods:
+        restart_ovnkube_pods(core_v1, NAMESPACE, POD_NAME_PATTERN, nodes, args.dry_run)
+    
+    if args.dry_run:
+        print("\n[DRY RUN] Script completed successfully (no changes were made).")
+    else:
+        print("Script finished successfully.")
 
 if __name__ == "__main__":
     # Before running, ensure you have the required libraries installed:
