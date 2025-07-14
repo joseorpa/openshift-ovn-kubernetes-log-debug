@@ -1,4 +1,6 @@
 import os
+import sys
+import argparse
 import yaml
 from jinja2 import Environment
 from kubernetes import client, config
@@ -55,11 +57,13 @@ metadata:
   namespace: openshift-ovn-kubernetes
 data:
 {% for node in nodes %}
+{%- if 'master' not in node.lower() %}
   {{ node }}: |
     # This sets the log level for the ovn-kubernetes node process:
     OVN_KUBE_LOG_LEVEL=5
     # You might also/instead want to enable debug logging for ovn-controller:
     OVN_LOG_LEVEL=dbg
+{%- endif %}
 {% endfor %}
   _master: |
     # This sets the log level for the ovn-kubernetes master process as well as the ovn-dbchecker:
@@ -106,19 +110,79 @@ def apply_configmap(api_instance, namespace, configmap_body):
             print(f"Error checking/creating ConfigMap: {e}")
             raise
 
+def get_kubeconfig_path(args):
+    """Get the kubeconfig path from arguments or user input."""
+    if args.kubeconfig:
+        kubeconfig_path = args.kubeconfig
+        print(f"Using kubeconfig from command line argument: {kubeconfig_path}")
+    else:
+        print("No kubeconfig path provided via --kubeconfig argument.")
+        kubeconfig_path = input("Please enter the path to your kubeconfig file: ").strip()
+        if not kubeconfig_path:
+            print("No kubeconfig path provided. Exiting.")
+            sys.exit(1)
+    
+    # Expand user home directory if needed
+    kubeconfig_path = os.path.expanduser(kubeconfig_path)
+    
+    # Check if file exists
+    if not os.path.exists(kubeconfig_path):
+        print(f"Kubeconfig file not found at: {kubeconfig_path}")
+        print("Please verify the file path exists.")
+        sys.exit(1)
+    
+    return kubeconfig_path
+
 def main():
     """Main function to generate and apply the ConfigMap."""
-    # --- Configuration ---
-    NAMESPACE = "openshift-ovn-kubernetes"
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(
+        description="Generate and apply OVN-Kubernetes debug logging ConfigMap",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig
+  python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig ~/.kube/config
+  python3 openshift-ovn-kubernetes-log-debug.py  # Will prompt for kubeconfig path
+        """
+    )
+    parser.add_argument(
+        '--kubeconfig', '-k',
+        help='Path to the kubeconfig file (will prompt if not provided)',
+        type=str
+    )
+    parser.add_argument(
+        '--pod-pattern', '-p',
+        help='Pod name pattern to filter nodes (default: ovnkube-node)',
+        default='ovnkube-node',
+        type=str
+    )
+    parser.add_argument(
+        '--all-nodes', '-a',
+        help='Include all nodes in the cluster (ignore pod filtering)',
+        action='store_true'
+    )
+    parser.add_argument(
+        '--namespace', '-n',
+        help='Target namespace for the ConfigMap (default: openshift-ovn-kubernetes)',
+        default='openshift-ovn-kubernetes',
+        type=str
+    )
+    parser.add_argument(
+        '--debug',
+        help='Show debug output including generated YAML',
+        action='store_true'
+    )
     
-    # Set to True to filter nodes based on pods running on them.
-    # Set to False to include all nodes in the cluster.
-    FILTER_NODES_BY_PODS = True
-
-    # If FILTER_NODES_BY_PODS is True, this pattern MUST be specified.
-    # Only nodes running pods whose names contain this string will be included.
-    # Example: "ovn-kubernetes-node", "my-app", etc.
-    POD_NAME_PATTERN = "ovn-kubernetes-node"
+    args = parser.parse_args()
+    
+    # --- Configuration ---
+    NAMESPACE = args.namespace
+    POD_NAME_PATTERN = args.pod_pattern
+    FILTER_NODES_BY_PODS = not args.all_nodes
+    
+    # Get kubeconfig path
+    kubeconfig_path = get_kubeconfig_path(args)
 
     # --- Load Kubernetes Configuration ---
     try:
@@ -127,15 +191,37 @@ def main():
         print("Loaded in-cluster Kubernetes configuration.")
     except config.ConfigException:
         try:
-            # Fallback to kube-config file for local development
-            config.load_kube_config()
-            print("Loaded local kube-config.")
-        except config.ConfigException:
-            print("Could not locate a kube-config file or in-cluster config. A valid Kubernetes configuration is required to fetch node names.")
+            # Use the specified kubeconfig file path
+            config.load_kube_config(config_file=kubeconfig_path)
+            print(f"Loaded kubeconfig from: {kubeconfig_path}")
+        except config.ConfigException as e:
+            print(f"Could not load kubeconfig from {kubeconfig_path}")
+            print(f"Error: {e}")
+            try:
+                # Fallback to default kube-config file location
+                config.load_kube_config()
+                print("Loaded default kube-config.")
+            except config.ConfigException:
+                print("Could not locate a valid kubeconfig file or in-cluster config.")
+                print("Please ensure your kubeconfig file exists and is properly configured.")
+                return
+        except FileNotFoundError:
+            print(f"Kubeconfig file not found at: {kubeconfig_path}")
+            print("Please verify the file path exists.")
             return
 
     # --- Create Kubernetes API client ---
     core_v1 = client.CoreV1Api()
+
+    # Test the connection
+    try:
+        print("Testing connection to Kubernetes cluster...")
+        version = core_v1.get_api_resources()
+        print("Successfully connected to Kubernetes cluster.")
+    except Exception as e:
+        print(f"Failed to connect to Kubernetes cluster: {e}")
+        print("Please verify your kubeconfig is valid and the cluster is accessible.")
+        return
 
     # --- Get Node Names ---
     nodes = []
@@ -156,10 +242,17 @@ def main():
     print("Rendering ConfigMap template...")
     configmap_yaml = render_configmap_template(nodes)
     print("Template rendered.")
+    
+    if args.debug:
+        # Debug: Show the generated YAML structure
+        print("\nGenerated ConfigMap YAML:")
+        print("=" * 50)
+        print(configmap_yaml)
+        print("=" * 50)
 
     # --- Parse YAML to Python Dictionary ---
     configmap_body = yaml.safe_load(configmap_yaml)
-
+    
     # --- Apply the ConfigMap ---
     print(f"Applying ConfigMap to namespace '{NAMESPACE}'...")
     apply_configmap(core_v1, NAMESPACE, configmap_body)
