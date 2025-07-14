@@ -1,4 +1,4 @@
-# Kubernetes OVN ConfigMap Generator
+# Openshift ovn kubernetes log debug setter
 
 This Python script dynamically generates a Kubernetes `ConfigMap` to override environment variables for OVN-Kubernetes components. It can target all nodes in a cluster or be filtered to only include nodes running specific pods.
 
