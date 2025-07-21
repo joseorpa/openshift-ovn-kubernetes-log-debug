@@ -119,8 +119,11 @@ def apply_configmap(api_instance, namespace, configmap_body, dry_run=False):
             raise
 
 def restart_ovnkube_pods(api_instance, namespace, pod_pattern, nodes, dry_run=False):
-    """Restart ovnkube-node pods on the specified nodes by deleting them."""
-    print(f"\nRestarting {pod_pattern} pods on {len(nodes)} nodes...")
+    """Restart ovnkube-node pods on the specified nodes by deleting them.
+    
+    Note: pod_pattern was used for node filtering, but this function always restarts ovnkube-node pods.
+    """
+    print(f"\nRestarting ovnkube-node pods on {len(nodes)} nodes (nodes were identified using pattern: {pod_pattern})...")
     
     try:
         # Get all pods in the namespace
@@ -128,21 +131,21 @@ def restart_ovnkube_pods(api_instance, namespace, pod_pattern, nodes, dry_run=Fa
         
         pods_to_restart = []
         for pod in pod_list.items:
-            # Check if pod matches the pattern and is on one of our nodes
-            if (pod_pattern in pod.metadata.name and 
+            # Always look for ovnkube-node pods on the specified nodes
+            if ("ovnkube-node" in pod.metadata.name and 
                 pod.spec.node_name in nodes):
                 pods_to_restart.append(pod)
         
         if not pods_to_restart:
-            print(f"No {pod_pattern} pods found on the specified nodes.")
+            print(f"No ovnkube-node pods found on the specified nodes.")
             return
         
-        print(f"Found {len(pods_to_restart)} pods to restart:")
+        print(f"Found {len(pods_to_restart)} ovnkube-node pods to restart:")
         for pod in pods_to_restart:
             print(f"  - {pod.metadata.name} (on {pod.spec.node_name})")
         
         if dry_run:
-            print(f"\n[DRY RUN] Would delete {len(pods_to_restart)} pods (DaemonSet will recreate them)")
+            print(f"\n[DRY RUN] Would delete {len(pods_to_restart)} ovnkube-node pods (DaemonSet will recreate them)")
             return
         
         # Delete the pods
