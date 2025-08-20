@@ -99,8 +99,8 @@ python3 openshift-ovn-kubernetes-log-debug.py \
   --kubeconfig /path/to/kubeconfig \
   --pod-pattern "ovnkube-node" \
   --namespace "openshift-ovn-kubernetes" \
-  --ovn-kube-log-level 5 \
-  --ovn-log-level dbg \
+  --ovn-kube-log-level 3 \
+  --ovn-log-level warn \
   --restart-pods \
   --debug
 ```
@@ -117,8 +117,8 @@ python3 openshift-ovn-kubernetes-log-debug.py \
 | `--revert` | | Revert debug logging by removing ConfigMap and restarting affected pods | `False` |
 | `--dry-run` | | Show what would be done without making any changes | `False` |
 | `--debug` | | Show debug output including generated YAML | `False` |
-| `--ovn-kube-log-level` | | OVN Kubernetes log level (1-10) | `5` |
-| `--ovn-log-level` | | OVN log level (off, emer, err, warn, info, dbg) | `dbg` |
+| `--ovn-kube-log-level` | | OVN Kubernetes log level (1-10) | `3` |
+| `--ovn-log-level` | | OVN log level (off, emer, err, warn, info, dbg) | `warn` |
 | `--help` | `-h` | Show help message and exit | |
 
 **Note:** When using `--revert`, the `--all-nodes` option is not allowed, and `--pod-pattern` is ignored (the script reads affected nodes from the existing ConfigMap). Log level options are also ignored during revert operations.
@@ -129,13 +129,13 @@ The script allows you to customize both OVN-Kubernetes and OVN log levels indepe
 
 ### OVN-Kubernetes Log Level (`--ovn-kube-log-level`)
 - **Range:** 1-10 (integer values)
-- **Default:** 5
+- **Default:** 3
 - **Description:** Controls the verbosity of ovn-kubernetes components
 - **Usage:** Higher values provide more verbose logging
 
 ### OVN Log Level (`--ovn-log-level`)
 - **Options:** off, emer, err, warn, info, dbg
-- **Default:** dbg
+- **Default:** warn
 - **Description:** Controls the verbosity of OVN components (ovn-controller, northd, nbdb, sbdb)
 - **Usage:** 
   - `off`: No logging
@@ -152,7 +152,7 @@ The script allows you to customize both OVN-Kubernetes and OVN log levels indepe
 python3 openshift-ovn-kubernetes-log-debug.py -k /path/to/kubeconfig --ovn-kube-log-level 3 --ovn-log-level warn
 
 # Standard debug logging (default)
-python3 openshift-ovn-kubernetes-log-debug.py -k /path/to/kubeconfig --ovn-kube-log-level 5 --ovn-log-level dbg
+python3 openshift-ovn-kubernetes-log-debug.py -k /path/to/kubeconfig --ovn-kube-log-level 3 --ovn-log-level warn
 
 # Maximum verbosity for troubleshooting
 python3 openshift-ovn-kubernetes-log-debug.py -k /path/to/kubeconfig --ovn-kube-log-level 10 --ovn-log-level dbg
@@ -232,19 +232,19 @@ metadata:
 data:
   worker-1.example.com: |
     # This sets the log level for the ovn-kubernetes node process:
-    OVN_KUBE_LOG_LEVEL=5
+    OVN_KUBE_LOG_LEVEL=3
     # You might also/instead want to enable debug logging for ovn-controller:
-    OVN_LOG_LEVEL=dbg
+    OVN_LOG_LEVEL=warn
   worker-2.example.com: |
     # This sets the log level for the ovn-kubernetes node process:
-    OVN_KUBE_LOG_LEVEL=5
+    OVN_KUBE_LOG_LEVEL=3
     # You might also/instead want to enable debug logging for ovn-controller:
-    OVN_LOG_LEVEL=dbg
+    OVN_LOG_LEVEL=warn
   _master: |
     # This sets the log level for the ovn-kubernetes master process as well as the ovn-dbchecker:
-    OVN_KUBE_LOG_LEVEL=5
+    OVN_KUBE_LOG_LEVEL=3
     # You might also/instead want to enable debug logging for northd, nbdb and sbdb on all masters:
-    OVN_LOG_LEVEL=dbg
+    OVN_LOG_LEVEL=warn
 ```
 
 With custom log levels (`--ovn-kube-log-level 3 --ovn-log-level warn`):
@@ -328,7 +328,7 @@ python3 openshift-ovn-kubernetes-log-debug.py \
 python3 openshift-ovn-kubernetes-log-debug.py \
   --kubeconfig /path/to/kubeconfig \
   --ovn-kube-log-level 6 \
-  --ovn-log-level dbg \
+  --ovn-log-level warn \
   --dry-run
 
 # Check current debug configuration before reverting

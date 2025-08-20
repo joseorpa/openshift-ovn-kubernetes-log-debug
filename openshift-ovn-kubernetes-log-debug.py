@@ -46,7 +46,7 @@ def get_nodes_by_pod_filter(api_instance, pod_name_pattern):
         print("Please ensure your kube-config is correct and you have permissions to list pods.")
         return []
 
-def render_configmap_template(nodes, ovn_kube_log_level=5, ovn_log_level='dbg'):
+def render_configmap_template(nodes, ovn_kube_log_level=3, ovn_log_level='warn'):
     """Renders the ConfigMap YAML using a Jinja2 template."""
     # This uses an inline string as the template.
     template_str = """
@@ -322,17 +322,17 @@ Examples:
     )
     parser.add_argument(
         '--ovn-kube-log-level',
-        help='OVN Kubernetes log level (1-10, default: 5)',
+        help='OVN Kubernetes log level (1-10, default: 3)',
         type=int,
         choices=range(1, 11),
-        default=5,
+        default=3,
         metavar='LEVEL'
     )
     parser.add_argument(
         '--ovn-log-level',
-        help='OVN log level (off, emer, err, warn, info, dbg, default: dbg)',
+        help='OVN log level (off, emer, err, warn, info, dbg, default: warn)',
         choices=['off', 'emer', 'err', 'warn', 'info', 'dbg'],
-        default='dbg',
+        default='warn',
         metavar='LEVEL'
     )
     
@@ -345,7 +345,7 @@ Examples:
             sys.exit(1)
         if args.pod_pattern != 'ovnkube-node':
             print("Warning: --pod-pattern is ignored when using --revert (pattern will be read from ConfigMap)")
-        if args.ovn_kube_log_level != 5 or args.ovn_log_level != 'dbg':
+        if args.ovn_kube_log_level != 3 or args.ovn_log_level != 'warn':
             print("Warning: --ovn-kube-log-level and --ovn-log-level are ignored when using --revert")
     
     # --- Configuration ---
