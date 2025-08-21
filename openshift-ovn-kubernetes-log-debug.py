@@ -410,8 +410,8 @@ Examples:
 
     # --- Create Kubernetes API client ---
     if args.disable_ssl_verification:
-        # Configure client to disable SSL verification
-        configuration = client.Configuration()
+        # Configure client to disable SSL verification while preserving other settings
+        configuration = client.Configuration.get_default_copy()
         configuration.verify_ssl = False
         configuration.ssl_ca_cert = None
         api_client = client.ApiClient(configuration)
