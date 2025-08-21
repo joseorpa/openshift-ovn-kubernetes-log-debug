@@ -123,7 +123,7 @@ def restart_ovnkube_pods(api_instance, namespace, pod_pattern, nodes, dry_run=Fa
     
     Note: pod_pattern was used for node filtering, but this function always restarts ovnkube-node pods.
     """
-    print(f"\nRestarting ovnkube-node pods on {len(nodes)} nodes (nodes were identified using pattern: {pod_pattern})...")
+    print(f"\nRestarting ovnkube-node pods on {len(nodes)} nodes...")
     
     try:
         # Get all pods in the namespace
@@ -272,6 +272,7 @@ Examples:
   python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig --restart-pods
   python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig --dry-run
   python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig --ovn-kube-log-level 3 --ovn-log-level warn
+  python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig --nodes node-a.example.com,node-b.example.com
   python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig --revert
   python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig --revert --restart-pods
   python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig --revert --dry-run
@@ -293,6 +294,11 @@ Examples:
         '--all-nodes', '-a',
         help='Include all nodes in the cluster (ignore pod filtering)',
         action='store_true'
+    )
+    parser.add_argument(
+        '--nodes',
+        help='Comma-separated list of node names to target (overrides pod filtering and --all-nodes)',
+        type=str
     )
     parser.add_argument(
         '--namespace', '-n',
@@ -345,8 +351,16 @@ Examples:
             sys.exit(1)
         if args.pod_pattern != 'ovnkube-node':
             print("Warning: --pod-pattern is ignored when using --revert (pattern will be read from ConfigMap)")
+        if args.nodes:
+            print("Warning: --nodes is ignored when using --revert")
         if args.ovn_kube_log_level != 3 or args.ovn_log_level != 'warn':
             print("Warning: --ovn-kube-log-level and --ovn-log-level are ignored when using --revert")
+    else:
+        # Non-revert mode precedence warnings
+        if args.nodes and args.all_nodes:
+            print("Warning: --all-nodes is ignored because --nodes is provided")
+        if args.nodes and args.pod_pattern != 'ovnkube-node':
+            print("Warning: --pod-pattern is ignored because --nodes is provided")
     
     # --- Configuration ---
     NAMESPACE = args.namespace
@@ -403,14 +417,24 @@ Examples:
 
     # --- Get Node Names ---
     nodes = []
-    if FILTER_NODES_BY_PODS:
-        if not POD_NAME_PATTERN:
-            print("Error: Filtering by pods is enabled, but POD_NAME_PATTERN is empty.")
-            print("Please specify a pattern to continue.")
+    if args.nodes:
+        # Parse explicit node list
+        nodes = [n.strip() for n in args.nodes.split(',') if n.strip()]
+        if not nodes:
+            print("Error: --nodes was provided but no valid node names were found after parsing.")
             return
-        nodes = get_nodes_by_pod_filter(core_v1, POD_NAME_PATTERN)
+        print(f"Using explicitly provided nodes ({len(nodes)}):")
+        for node in nodes:
+            print(f"  - {node}")
     else:
-        nodes = get_all_node_names(core_v1)
+        if FILTER_NODES_BY_PODS:
+            if not POD_NAME_PATTERN:
+                print("Error: Filtering by pods is enabled, but POD_NAME_PATTERN is empty.")
+                print("Please specify a pattern to continue.")
+                return
+            nodes = get_nodes_by_pod_filter(core_v1, POD_NAME_PATTERN)
+        else:
+            nodes = get_all_node_names(core_v1)
 
     if not nodes:
         print("No node names were found based on the filter criteria. Cannot create ConfigMap. Exiting.")

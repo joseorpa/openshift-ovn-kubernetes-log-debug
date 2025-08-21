@@ -88,6 +88,9 @@ python3 openshift-ovn-kubernetes-log-debug.py -k /path/to/kubeconfig --debug
 # Customize log levels
 python3 openshift-ovn-kubernetes-log-debug.py -k /path/to/kubeconfig --ovn-kube-log-level 3 --ovn-log-level warn
 
+# Target a specific list of nodes
+python3 openshift-ovn-kubernetes-log-debug.py -k /path/to/kubeconfig --nodes node-a.example.com,node-b.example.com
+
 # Maximum debug logging
 python3 openshift-ovn-kubernetes-log-debug.py -k /path/to/kubeconfig --ovn-kube-log-level 10 --ovn-log-level dbg
 
@@ -112,6 +115,7 @@ python3 openshift-ovn-kubernetes-log-debug.py \
 | `--kubeconfig` | `-k` | Path to kubeconfig file (prompts if not provided) | None |
 | `--pod-pattern` | `-p` | Pod name pattern to filter nodes | `ovnkube-node` |
 | `--all-nodes` | `-a` | Include all nodes (ignore pod filtering) | `False` |
+| `--nodes` | | Comma-separated list of node names to target (overrides `--pod-pattern` and `--all-nodes`) | None |
 | `--namespace` | `-n` | Target namespace for ConfigMap | `openshift-ovn-kubernetes` |
 | `--restart-pods` | | Restart ovnkube-node pods after applying ConfigMap | `False` |
 | `--revert` | | Revert debug logging by removing ConfigMap and restarting affected pods | `False` |
@@ -168,7 +172,10 @@ python3 openshift-ovn-kubernetes-log-debug.py -k /path/to/kubeconfig --ovn-kube-
 
 ### Apply Debug Logging (Default Mode)
 1. **Connects to Kubernetes:** Uses the specified kubeconfig to connect to your cluster
-2. **Discovers Nodes:** Finds nodes running pods matching the specified pattern (default: `ovnkube-node`)
+2. **Discovers Nodes:** Selects nodes by precedence:
+   - If `--nodes` is provided, uses that exact list
+   - Else if `--all-nodes` is provided, includes all nodes
+   - Else finds nodes running pods matching the specified pattern (default: `ovnkube-node`)
 3. **Generates ConfigMap:** Creates a `ConfigMap` with debug logging configuration for each node
 4. **Applies Configuration:** Creates or updates the `env-overrides` ConfigMap in the target namespace
 5. **Restarts Pods (Optional):** Deletes matching pods so they restart with new configuration
@@ -311,6 +318,12 @@ python3 openshift-ovn-kubernetes-log-debug.py \
   --namespace "custom-networking" \
   --ovn-kube-log-level 4 \
   --ovn-log-level warn \
+  --restart-pods
+
+# Explicit node list (overrides pattern and all-nodes)
+python3 openshift-ovn-kubernetes-log-debug.py \
+  --kubeconfig /path/to/kubeconfig \
+  --nodes node-a.example.com,node-b.example.com \
   --restart-pods
 ```
 
