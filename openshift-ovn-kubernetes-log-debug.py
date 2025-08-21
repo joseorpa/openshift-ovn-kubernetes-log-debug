@@ -2,6 +2,7 @@ import os
 import sys
 import argparse
 import yaml
+import urllib3
 from jinja2 import Environment
 from kubernetes import client, config
 
@@ -271,6 +272,7 @@ Examples:
   python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig ~/.kube/config
   python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig --restart-pods
   python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig --dry-run
+  python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig --disable-ssl-verification
   python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig --ovn-kube-log-level 3 --ovn-log-level warn
   python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig --nodes node-a.example.com,node-b.example.com
   python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig --revert
@@ -341,6 +343,11 @@ Examples:
         default='warn',
         metavar='LEVEL'
     )
+    parser.add_argument(
+        '--disable-ssl-verification',
+        help='Disable SSL certificate verification (WARNING: This is insecure)',
+        action='store_true'
+    )
     
     args = parser.parse_args()
     
@@ -370,6 +377,11 @@ Examples:
     # Get kubeconfig path
     kubeconfig_path = get_kubeconfig_path(args)
 
+    # --- Handle SSL verification bypass ---
+    if args.disable_ssl_verification:
+        print("WARNING: SSL certificate verification is disabled. This is insecure!")
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
     # --- Load Kubernetes Configuration ---
     try:
         # Try to load in-cluster config first
@@ -397,7 +409,15 @@ Examples:
             return
 
     # --- Create Kubernetes API client ---
-    core_v1 = client.CoreV1Api()
+    if args.disable_ssl_verification:
+        # Configure client to disable SSL verification
+        configuration = client.Configuration()
+        configuration.verify_ssl = False
+        configuration.ssl_ca_cert = None
+        api_client = client.ApiClient(configuration)
+        core_v1 = client.CoreV1Api(api_client)
+    else:
+        core_v1 = client.CoreV1Api()
 
     # Test the connection
     try:

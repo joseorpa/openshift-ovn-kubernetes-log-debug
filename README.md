@@ -6,6 +6,7 @@ This Python script dynamically generates a Kubernetes `ConfigMap` to enable debu
 
 - **Dynamic Node Discovery:** Automatically fetches node names from your Kubernetes cluster
 - **Flexible Kubeconfig Support:** Use command-line arguments or interactive prompts for kubeconfig path
+- **SSL Certificate Bypass:** Option to disable SSL verification for clusters with self-signed certificates
 - **Targeted Configuration:** Filter nodes by pod name pattern to apply settings only to specific nodes
 - **Automated Application:** Creates or replaces the `ConfigMap` directly in the specified namespace
 - **Pod Restart Option:** Automatically restart ovnkube-node pods to immediately apply debug logging
@@ -85,6 +86,9 @@ python3 openshift-ovn-kubernetes-log-debug.py -k /path/to/kubeconfig --namespace
 # Show debug output (generated YAML)
 python3 openshift-ovn-kubernetes-log-debug.py -k /path/to/kubeconfig --debug
 
+# Disable SSL certificate verification (for clusters with self-signed certificates)
+python3 openshift-ovn-kubernetes-log-debug.py -k /path/to/kubeconfig --disable-ssl-verification
+
 # Customize log levels
 python3 openshift-ovn-kubernetes-log-debug.py -k /path/to/kubeconfig --ovn-kube-log-level 3 --ovn-log-level warn
 
@@ -106,6 +110,12 @@ python3 openshift-ovn-kubernetes-log-debug.py \
   --ovn-log-level warn \
   --restart-pods \
   --debug
+
+# Example with SSL verification disabled (for clusters with certificate issues)
+python3 openshift-ovn-kubernetes-log-debug.py \
+  --kubeconfig /path/to/kubeconfig \
+  --disable-ssl-verification \
+  --restart-pods
 ```
 
 ## Command-Line Options
@@ -123,6 +133,7 @@ python3 openshift-ovn-kubernetes-log-debug.py \
 | `--debug` | | Show debug output including generated YAML | `False` |
 | `--ovn-kube-log-level` | | OVN Kubernetes log level (1-10) | `3` |
 | `--ovn-log-level` | | OVN log level (off, emer, err, warn, info, dbg) | `warn` |
+| `--disable-ssl-verification` | | Disable SSL certificate verification (WARNING: Insecure) | `False` |
 | `--help` | `-h` | Show help message and exit | |
 
 **Note:** When using `--revert`, the `--all-nodes` option is not allowed, and `--pod-pattern` is ignored (the script reads affected nodes from the existing ConfigMap). Log level options are also ignored during revert operations.
@@ -224,6 +235,9 @@ python3 openshift-ovn-kubernetes-log-debug.py -k /path/to/kubeconfig --revert --
 
 # Preview complete revert workflow
 python3 openshift-ovn-kubernetes-log-debug.py -k /path/to/kubeconfig --revert --restart-pods --dry-run
+
+# Test SSL bypass with dry-run (for certificate issues)
+python3 openshift-ovn-kubernetes-log-debug.py -k /path/to/kubeconfig --disable-ssl-verification --dry-run
 ```
 
 ## Generated ConfigMap Structure
@@ -400,6 +414,44 @@ Ensure your kubeconfig has the necessary RBAC permissions listed above.
 - Verify your kubeconfig path is correct
 - Check that your cluster is accessible
 - Ensure the cluster context is properly set
+
+### SSL/TLS Certificate Issues
+
+If you encounter SSL certificate verification errors like:
+```
+Failed to connect to Kubernetes cluster: HTTPSConnectionPool(host='api.cluster.example.com', port=6443): Max retries exceeded with url: /api/v1/ (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1035)')))
+```
+
+**Causes:**
+- Cluster uses self-signed certificates
+- Certificate authority (CA) not in system trust store
+- Incomplete certificate chain
+- Hostname mismatch in certificate
+
+**Solutions (in order of preference):**
+
+1. **Get proper CA certificate** (recommended):
+   ```bash
+   # Extract CA cert from kubeconfig
+   kubectl config view --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' | base64 -d > cluster-ca.crt
+   # Add to system trust store (method varies by OS)
+   ```
+
+2. **Use embedded CA in kubeconfig** (recommended):
+   - Ensure your kubeconfig has `certificate-authority-data` field properly set
+   - Contact cluster administrator for proper kubeconfig
+
+3. **Bypass SSL verification** (use with caution):
+   ```bash
+   python3 openshift-ovn-kubernetes-log-debug.py -k /path/to/kubeconfig --disable-ssl-verification
+   ```
+
+**⚠️ Security Warning:** The `--disable-ssl-verification` option should only be used in:
+- Development/test environments
+- Trusted network environments
+- When you understand the security implications
+
+This option makes your connection vulnerable to man-in-the-middle attacks.
 
 ### Pod Restart Issues
 - Verify the pods are managed by a DaemonSet (they should be recreated automatically)
