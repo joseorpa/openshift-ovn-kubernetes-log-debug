@@ -40,24 +40,30 @@ This Python script dynamically generates a Kubernetes `ConfigMap` to enable debu
 ### Basic Usage
 
 ```bash
-# Interactive mode - will prompt for kubeconfig path
-python3 openshift-ovn-kubernetes-log-debug.py
+# Use current oc login session (recommended for OpenShift)
+python3 openshift-ovn-kubernetes-log-debug.py --use-current-context
 
-# Specify kubeconfig path
+# Specify kubeconfig path explicitly
 python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig
 
 # Short form
 python3 openshift-ovn-kubernetes-log-debug.py -k ~/.kube/config
+
+# Interactive mode - will prompt for kubeconfig path
+python3 openshift-ovn-kubernetes-log-debug.py
 ```
 
 ### Advanced Usage
 
 ```bash
-# Apply ConfigMap and restart pods immediately
-python3 openshift-ovn-kubernetes-log-debug.py -k /path/to/kubeconfig --restart-pods
+# Apply ConfigMap and restart pods immediately (using oc login context)
+python3 openshift-ovn-kubernetes-log-debug.py --use-current-context --restart-pods
 
 # Preview changes without applying them (dry-run)
-python3 openshift-ovn-kubernetes-log-debug.py -k /path/to/kubeconfig --dry-run
+python3 openshift-ovn-kubernetes-log-debug.py --use-current-context --dry-run
+
+# Use oc login with SSL bypass for clusters with certificate issues
+python3 openshift-ovn-kubernetes-log-debug.py --use-current-context --disable-ssl-verification
 
 # Preview changes with pod restart (dry-run)
 python3 openshift-ovn-kubernetes-log-debug.py -k /path/to/kubeconfig --dry-run --restart-pods
@@ -122,7 +128,8 @@ python3 openshift-ovn-kubernetes-log-debug.py \
 
 | Option | Short | Description | Default |
 |--------|-------|-------------|---------|
-| `--kubeconfig` | `-k` | Path to kubeconfig file (prompts if not provided) | None |
+| `--kubeconfig` | `-k` | Path to kubeconfig file (prompts if neither this nor --use-current-context provided) | None |
+| `--use-current-context` | | Use default kubeconfig and current context (same as oc uses) | `False` |
 | `--pod-pattern` | `-p` | Pod name pattern to filter nodes | `ovnkube-node` |
 | `--all-nodes` | `-a` | Include all nodes (ignore pod filtering) | `False` |
 | `--nodes` | | Comma-separated list of node names to target (overrides `--pod-pattern` and `--all-nodes`) | None |
@@ -137,6 +144,55 @@ python3 openshift-ovn-kubernetes-log-debug.py \
 | `--help` | `-h` | Show help message and exit | |
 
 **Note:** When using `--revert`, the `--all-nodes` option is not allowed, and `--pod-pattern` is ignored (the script reads affected nodes from the existing ConfigMap). Log level options are also ignored during revert operations.
+
+## OpenShift Authentication Integration
+
+The script seamlessly integrates with OpenShift CLI (`oc`) authentication. When you use `oc login`, your authentication tokens are stored in the kubeconfig file, which this script can use directly.
+
+### Using oc login Authentication
+
+```bash
+# Step 1: Login to OpenShift (if not already logged in)
+oc login https://api.cluster.example.com:6443 --username=myuser
+
+# Step 2: Use the current oc session
+python3 openshift-ovn-kubernetes-log-debug.py --use-current-context --restart-pods
+
+# Alternative: Specify kubeconfig explicitly (same result)
+python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig ~/.kube/config --restart-pods
+```
+
+### Authentication Verification
+
+When using `--use-current-context`, the script will:
+- ✅ Verify your current authentication status using `oc whoami`
+- ✅ Display the current context and username
+- ✅ Use the same bearer tokens that `oc` commands use
+- ✅ Respect the current project/namespace context
+
+### Benefits of oc Integration
+
+- **Seamless Authentication**: No need to manage separate kubeconfig files
+- **Token Management**: Automatic token refresh handled by oc
+- **Context Awareness**: Uses the same cluster context as your oc commands
+- **Security**: Leverages OpenShift's built-in authentication mechanisms
+
+### Authentication Examples
+
+```bash
+# Check current oc session first
+oc whoami
+oc project
+
+# Use current session with SSL bypass (for development clusters)
+python3 openshift-ovn-kubernetes-log-debug.py --use-current-context --disable-ssl-verification
+
+# Dry run with current session
+python3 openshift-ovn-kubernetes-log-debug.py --use-current-context --dry-run
+
+# Full workflow with oc session
+python3 openshift-ovn-kubernetes-log-debug.py --use-current-context --restart-pods --debug
+```
 
 ## Log Level Customization
 
@@ -299,14 +355,20 @@ data:
 ### Enable Debug Logging for OpenShift OVN-Kubernetes
 
 ```bash
-# Standard OpenShift setup with default log levels
+# Standard OpenShift setup using oc login (recommended)
 python3 openshift-ovn-kubernetes-log-debug.py \
-  --kubeconfig ~/.kube/config \
+  --use-current-context \
+  --restart-pods
+
+# For clusters with certificate issues
+python3 openshift-ovn-kubernetes-log-debug.py \
+  --use-current-context \
+  --disable-ssl-verification \
   --restart-pods
 
 # Custom log levels for more targeted debugging
 python3 openshift-ovn-kubernetes-log-debug.py \
-  --kubeconfig ~/.kube/config \
+  --use-current-context \
   --ovn-kube-log-level 7 \
   --ovn-log-level info \
   --restart-pods
@@ -315,7 +377,13 @@ python3 openshift-ovn-kubernetes-log-debug.py \
 ### Disable Debug Logging (Revert)
 
 ```bash
-# Remove debug logging configuration
+# Remove debug logging configuration using oc login context
+python3 openshift-ovn-kubernetes-log-debug.py \
+  --use-current-context \
+  --revert \
+  --restart-pods
+
+# Alternative: Specify kubeconfig explicitly
 python3 openshift-ovn-kubernetes-log-debug.py \
   --kubeconfig ~/.kube/config \
   --revert \

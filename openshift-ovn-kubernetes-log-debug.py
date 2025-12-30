@@ -238,12 +238,21 @@ def revert_debug_logging(api_instance, namespace, pod_pattern, restart_pods=Fals
         raise
 
 def get_kubeconfig_path(args):
-    """Get the kubeconfig path from arguments or user input."""
+    """Get the kubeconfig path from arguments, environment, or user input."""
     if args.kubeconfig:
         kubeconfig_path = args.kubeconfig
         print(f"Using kubeconfig from command line argument: {kubeconfig_path}")
+    elif args.use_current_context:
+        # Use default kubeconfig location (same as oc uses)
+        kubeconfig_path = os.path.expanduser("~/.kube/config")
+        if os.path.exists(kubeconfig_path):
+            print(f"Using default kubeconfig (same as 'oc'): {kubeconfig_path}")
+        else:
+            print("Default kubeconfig not found. Please run 'oc login' first or specify --kubeconfig")
+            sys.exit(1)
     else:
         print("No kubeconfig path provided via --kubeconfig argument.")
+        print("You can also use --use-current-context to use the same config as 'oc'")
         kubeconfig_path = input("Please enter the path to your kubeconfig file: ").strip()
         if not kubeconfig_path:
             print("No kubeconfig path provided. Exiting.")
@@ -256,9 +265,46 @@ def get_kubeconfig_path(args):
     if not os.path.exists(kubeconfig_path):
         print(f"Kubeconfig file not found at: {kubeconfig_path}")
         print("Please verify the file path exists.")
+        if not args.kubeconfig and not args.use_current_context:
+            print("Tip: Try running 'oc login' first, then use --use-current-context")
         sys.exit(1)
     
     return kubeconfig_path
+
+def verify_oc_authentication(kubeconfig_path):
+    """Verify and display current authentication context."""
+    try:
+        import subprocess
+        
+        # Try to get current context info using kubectl/oc
+        try:
+            result = subprocess.run(['oc', 'whoami'], capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                user = result.stdout.strip()
+                print(f"✓ Authenticated as: {user}")
+                
+                # Get current context
+                result = subprocess.run(['oc', 'config', 'current-context'], capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    context = result.stdout.strip()
+                    print(f"✓ Current context: {context}")
+                return True
+            else:
+                print("Note: Unable to verify 'oc' authentication status")
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            # oc not available, try kubectl
+            try:
+                result = subprocess.run(['kubectl', 'config', 'current-context'], capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    context = result.stdout.strip()
+                    print(f"✓ Current kubectl context: {context}")
+                return True
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                print("Note: Neither 'oc' nor 'kubectl' available for authentication verification")
+    except Exception as e:
+        print(f"Note: Could not verify authentication context: {e}")
+    
+    return False
 
 def main():
     """Main function to generate and apply the ConfigMap."""
@@ -268,22 +314,29 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # Use current oc login context (recommended for OpenShift)
+  python3 openshift-ovn-kubernetes-log-debug.py --use-current-context
+  
+  # Specify kubeconfig path explicitly
   python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig
   python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig ~/.kube/config
+  
+  # Use current oc context with options
+  python3 openshift-ovn-kubernetes-log-debug.py --use-current-context --restart-pods
+  python3 openshift-ovn-kubernetes-log-debug.py --use-current-context --disable-ssl-verification
+  python3 openshift-ovn-kubernetes-log-debug.py --use-current-context --dry-run
+  
+  # Advanced usage
   python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig --restart-pods
-  python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig --dry-run
-  python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig --disable-ssl-verification
   python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig --ovn-kube-log-level 3 --ovn-log-level warn
   python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig --nodes node-a.example.com,node-b.example.com
-  python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig --revert
   python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig --revert --restart-pods
-  python3 openshift-ovn-kubernetes-log-debug.py --kubeconfig /path/to/kubeconfig --revert --dry-run
   python3 openshift-ovn-kubernetes-log-debug.py  # Will prompt for kubeconfig path
         """
     )
     parser.add_argument(
         '--kubeconfig', '-k',
-        help='Path to the kubeconfig file (will prompt if not provided)',
+        help='Path to the kubeconfig file (will prompt if neither this nor --use-current-context provided)',
         type=str
     )
     parser.add_argument(
@@ -348,10 +401,19 @@ Examples:
         help='Disable SSL certificate verification (WARNING: This is insecure)',
         action='store_true'
     )
+    parser.add_argument(
+        '--use-current-context',
+        help='Use default kubeconfig and current context (same as oc uses)',
+        action='store_true'
+    )
     
     args = parser.parse_args()
     
     # Validate arguments
+    if args.kubeconfig and args.use_current_context:
+        print("Error: Cannot specify both --kubeconfig and --use-current-context")
+        sys.exit(1)
+    
     if args.revert:
         if args.all_nodes:
             print("Error: --revert cannot be used with --all-nodes")
@@ -392,9 +454,17 @@ Examples:
             # Use the specified kubeconfig file path
             config.load_kube_config(config_file=kubeconfig_path)
             print(f"Loaded kubeconfig from: {kubeconfig_path}")
+            
+            # Verify authentication context (especially useful for oc login tokens)
+            if args.use_current_context or kubeconfig_path == os.path.expanduser("~/.kube/config"):
+                print("Verifying OpenShift/Kubernetes authentication...")
+                verify_oc_authentication(kubeconfig_path)
+                
         except config.ConfigException as e:
             print(f"Could not load kubeconfig from {kubeconfig_path}")
             print(f"Error: {e}")
+            if args.use_current_context:
+                print("Tip: Try running 'oc login' to authenticate first")
             try:
                 # Fallback to default kube-config file location
                 config.load_kube_config()
@@ -402,10 +472,13 @@ Examples:
             except config.ConfigException:
                 print("Could not locate a valid kubeconfig file or in-cluster config.")
                 print("Please ensure your kubeconfig file exists and is properly configured.")
+                print("Tip: Run 'oc login' to authenticate with OpenShift")
                 return
         except FileNotFoundError:
             print(f"Kubeconfig file not found at: {kubeconfig_path}")
             print("Please verify the file path exists.")
+            if args.use_current_context:
+                print("Tip: Try running 'oc login' to create the default kubeconfig")
             return
 
     # --- Create Kubernetes API client ---
